@@ -1,0 +1,75 @@
+ব্রাউজারে DNS over HTTPS (DoH) সক্রিয় থাকলে ব্রাউজার সরাসরি পোর্ট ৪৪৩ দিয়ে এনক্রিপ্টেড কোয়েরি পাঠায়, যার ফলে লোকাল DNS রিডাইরেক্ট কাজ করে না। একইভাবে বাণিজ্যিক VPN-গুলো বিভিন্ন নন-স্ট্যান্ডার্ড পোর্ট বা UDP প্রোটোকল ব্যবহার করে ট্রাফিক এনক্রিপ্ট করে ফিল্টারিং এড়িয়ে যায়।
+
+RouterOS v7-এ এই বাইপাস বন্ধ করার কার্যকর প্রিভেনশন আর্কিটেকচার ও CLI কনফিগারেশন:
+
+১. ব্রাউজারের DoH (DNS over HTTPS) ব্লক করার রুলস
+জনপ্রিয় পাবলিক DoH প্রোভাইডারগুলোর (Google, Cloudflare, Quad9, AdGuard) আইপি রেঞ্জ একটি অ্যাড্রেস লিস্টে রেখে ড্রপ করতে হবে, যেন ব্রাউজার বাধ্য হয়ে সিস্টেমের লোকাল আন-এনক্রিপ্টেড DNS-এ ফলব্যাক (Fallback) করে।
+
+##Code Snippet##
+
+# DoH প্রোভাইডারদের জন্য Address List তৈরি
+/ip firewall address-list
+add address=1.1.1.1 list=DoH_Servers comment="Cloudflare Primary"
+add address=1.0.0.1 list=DoH_Servers comment="Cloudflare Secondary"
+add address=8.8.8.8 list=DoH_Servers comment="Google Primary"
+add address=8.8.4.4 list=DoH_Servers comment="Google Secondary"
+add address=9.9.9.9 list=DoH_Servers comment="Quad9"
+add address=149.112.112.112 list=DoH_Servers comment="Quad9 Secondary"
+add address=94.140.14.14 list=DoH_Servers comment="AdGuard DNS"
+add address=94.140.15.15 list=DoH_Servers comment="AdGuard DNS"
+
+# DoH সার্ভারগুলোর সাথে 443 পোর্টের ট্রাফিক ড্রপ করা
+/ip firewall filter
+add chain=forward action=drop protocol=tcp dst-port=443 dst-address-list=DoH_Servers comment="Block DoH over TCP 443"
+add chain=forward action=drop protocol=udp dst-port=443 dst-address-list=DoH_Servers comment="Block DoH over UDP (QUIC) 443"
+
+# DoH ডোমেইন রিকোয়েস্ট DNS স্তরে ব্লক (Mozilla & Chrome Canary Domains)
+/ip dns static
+add name="use-application-dns.net" address=0.0.0.0 comment="Disable Firefox automatic DoH"
+
+২. বাণিজ্যিক ও ব্যক্তিগত VPN প্রোটোকল ড্রপ করার রুলস
+বেশিরভাগ ইউজার-লেভেল ফ্রি ও পেইড VPN নির্দিষ্ট কিছু পরিচিত প্রোটোকল ও পোর্টে কাজ করে (যেমন WireGuard, OpenVPN, IPsec, PPTP, L2TP):
+
+##Code Snippet##
+
+/ip firewall filter
+# OpenVPN স্ট্যান্ডার্ড পোর্ট ব্লক
+add chain=forward action=drop protocol=tcp dst-port=1194 comment="Block OpenVPN TCP"
+add chain=forward action=drop protocol=udp dst-port=1194 comment="Block OpenVPN UDP"
+
+# সাধারণ WireGuard ক্লায়েন্ট পোর্ট ব্লক
+add chain=forward action=drop protocol=udp dst-port=51820 comment="Block Default WireGuard"
+
+# IPsec ও IKEv2 টানেল ব্লক
+add chain=forward action=drop protocol=udp dst-port=500,4500 comment="Block IPsec IKE/NAT-T"
+add chain=forward action=drop protocol=ipsec-esp comment="Block IPsec ESP"
+
+# লিগ্যাসি PPTP ও L2TP ব্লক
+add chain=forward action=drop protocol=tcp dst-port=1723 comment="Block PPTP Control"
+add chain=forward action=drop protocol=gre comment="Block GRE Tunnel"
+add chain=forward action=drop protocol=udp dst-port=1701 comment="Block L2TP"
+
+৩. QUIC প্রোটোকল (HTTP/3) ব্লক করা
+গুগল ক্রোম এবং আধুনিক ব্রাউজারগুলো UDP ৪৪৩ (QUIC) দিয়ে কানেকশন তৈরি করে অনেক সময় সাধারণ TLS-Host বা কনটেন্ট ফিল্টার এড়িয়ে যায়। তাই লোকাল সাবনেটের জন্য UDP ৪৪৩ বন্ধ রাখা জরুরি:
+
+##Code Snippet##
+
+/ip firewall filter
+add chain=forward action=drop protocol=udp dst-port=443 comment="Block QUIC / HTTP3 (Forces browsers to TCP 443 where TLS-Host works)"
+
+৪. DNS হাইজ্যাক প্রতিরোধ (Strict NAT Redirection)
+ইউজার যদি ল্যাপটপ বা মোবাইলের নেটওয়ার্ক অ্যাডাপ্টারে স্ট্যাটিক DNS বসিয়ে নেয়, তবে সেই কুয়েরিগুলো রাউটার জোরপূর্বক নিজের DNS সার্ভারে ঘুরিয়ে দেবে:
+
+/ip firewall nat
+add chain=dstnat action=redirect to-ports=53 protocol=udp dst-port=53 in-interface-list=LAN comment="Force UDP 53 to MikroTik Local DNS"
+add chain=dstnat action=redirect to-ports=53 protocol=tcp dst-port=53 in-interface-list=LAN comment="Force TCP 53 to MikroTik Local DNS"
+
+
+@@ ফায়ারওয়াল রুলস সিকোয়েন্সিং সামারি @@
+
+ফিল্টারিং লেয়ার					অ্যাকশন							উদ্দেশ্য
+UDP 443 (QUIC)			drop				ব্রাউজারকে বাধ্য করা স্ট্যান্ডার্ড TCP TLS হ্যান্ডশেকে আসতে, যেন ফায়ারওয়াল ডোমেইন পড়তে পারে।
+DoH IP List			drop (Port 443)			ব্রাউজারের এনক্রিপ্টেড DNS টানেল তৈরি ব্যর্থ করা।
+Canary Domain			Static DNS 0.0.0.0		ফায়ারফক্স ও ক্রোমিয়ামের অটোমেটিক DoH মোড ডিসেবল করা।
+VPN Ports & Protocols		drop				সাধারণ টানেলিং ও প্রক্সি সার্ভিস অকার্যকর করা।
+DNS Port 53			dst-nat redirect		ক্লায়েন্টের ম্যানুয়াল DNS কনফিগারেশন অগ্রাহ্য করে রাউটারের সেন্ট্রাল পলিসি প্রয়োগ।
