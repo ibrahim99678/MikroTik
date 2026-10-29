@@ -1,0 +1,115 @@
+MikroTik RouterOS v7-এর container প্যাকেজ ব্যবহার করে সরাসরি রাউটারের ভেতরেই AdGuard Home চালানো যায়। এতে আলাদা কোনো রাস্পবেরি পাই বা সার্ভার ছাড়াই সেন্ট্রালাইজড অ্যাড ও ম্যালওয়্যার ব্লকিং নিশ্চিত করা সম্ভব।
+
+পূর্বশর্ত
+আর্কিটেকচার: রাউটারটিতে ARM, ARM64 অথবা x86/CHR আর্কিটেকচার থাকতে হবে (MIPSBE/MMIPS ডিভাইসে কন্টেইনার সাপোর্ট নেই)।
+
+স্টোরেজ: রাউটারের নিজস্ব ফ্ল্যাশ স্টোরেজ বাঁচাতে অবশ্যই একটি এক্সটার্নাল USB ড্রাইভ বা microSD কার্ড যুক্ত করে ফরম্যাট (ext4) করে নিন। এখানে আমরা স্টোরেজের নাম ধরছি disk1।
+
+কনফিগারেশন এনভায়রনমেন্ট:
+
+LAN ব্রিজ সাবনেট: 192.168.88.0/24
+
+কন্টেইনারের নিজস্ব সাবনেট: 172.17.0.0/24
+
+AdGuard কন্টেইনার IP: 172.17.0.2
+
+মাইক্রোটিক কন্টেইনার গেটওয়ে IP: 172.17.0.1
+
+ধাপে ধাপে কনফিগারেশন গাইড
+
+ধাপ ১: Container ফিচার এনাবল করা
+
+ডিভাইস সিকিউরিটির জন্য মাইক্রোটিকে কন্টেইনার মোড চালু করতে ফিজিক্যাল কনফার্মেশন প্রয়োজন হয়:
+
+## Code Snippet##
+
+/system/device-mode/update container=yes
+
+[Note: এই কমান্ড দেওয়ার পর টার্মিনালে নির্দেশ দিলে রাউটারের ফিজিক্যাল Reset Button ৩-৫ সেকেন্ড চেপে ধরে ছেড়ে দিন (অথবা রাউটারের পাওয়ার রিবুট করে কনফার্ম করুন)। এরপর /system/device-mode/print দিলে container: yes দেখতে পাবেন।]
+
+ধাপ ২: ভার্চুয়াল নেটওয়ার্কিং ও ইন্টারফেস তৈরি
+
+AdGuard Home-এর জন্য একটি ভার্চুয়াল ইথারনেট (veth) এবং আইসোলেটেড ব্রিজ তৈরি করুন:
+
+## Code Snippet##
+
+# কন্টেইনারের জন্য আলাদা ব্রিজ তৈরি
+/interface bridge
+add name=dockers-br
+
+# ভার্চুয়াল ইথারনেট (VETH) তৈরি
+/interface veth
+add name=veth-adguard address=172.17.0.2/24 gateway=172.17.0.1
+
+# VETH টিকে ব্রিজে যুক্ত করা
+/interface bridge port
+add bridge=dockers-br interface=veth-adguard
+
+# ব্রিজে গেটওয়ে আইপি অ্যাসাইন করা
+/ip address
+add address=172.17.0.1/24 interface=dockers-br network=172.17.0.0
+
+# কন্টেইনার যাতে ইন্টারনেট পায় সেজন্য NAT রুল
+/ip firewall nat
+add chain=srcnat action=masquerade src-address=172.17.0.0/24 comment="NAT for Container Internet"
+
+
+ধাপ ৩: এনভায়রনমেন্ট, মাউন্ট এবং রেজিস্ট্রি সেটআপ
+
+অ্যাডগার্ডের কনফিগ ফাইল ও ওয়ার্ক ডিরেক্টরি পারসিস্টেন্ট রাখতে এক্সটার্নাল ড্রাইভে ফোল্ডার মাউন্ট করুন:
+
+# ফাইল মাউন্ট পয়েন্ট তৈরি (disk1 স্টোরেজে)
+/container mounts
+add dst=/opt/adguardhome/conf name=adguard_conf src=/disk1/adguard/conf
+add dst=/opt/adguardhome/work name=adguard_work src=/disk1/adguard/work
+
+# ডকার হাব রেজিস্ট্রি ও রুট ডিরেক্টরি কনফিগারেশন
+/container config
+set registry-url=https://registry-1.docker.io tmpdir=disk1/pull
+
+ধাপ ৪: AdGuard Home কন্টেইনার নামানো ও রান করা
+
+# ডকার হাব থেকে ইমেজ নামিয়ে কন্টেইনার তৈরি
+/container
+add remote-image="adguard/adguardhome:latest" \
+    interface=veth-adguard \
+    root-dir=disk1/adguard/root \
+    mounts=adguard_conf,adguard_work \
+    logging=yes \
+    start-on-boot=yes \
+    comment="AdGuard Home DNS Adblocker"
+
+# কন্টেইনার স্টার্ট করা
+/container/start [find comment="AdGuard Home DNS Adblocker"]
+
+Note: স্ট্যাটাস চেক করতে /container/print দিন। স্ট্যাটাস extracting থেকে running-এ পরিবর্তিত হওয়া পর্যন্ত অপেক্ষা করুন।
+
+ধাপ ৫: AdGuard Home ইনিশিয়াল সেটআপ ও পোর্ট অ্যাক্সেস
+
+AdGuard-এর ওয়েব প্যানেল অ্যাক্সেস করার জন্য লোকাল ল্যান থেকে একটি পোর্ট ফরওয়ার্ডিং (DST-NAT) রুল দিন:
+
+/ip firewall nat
+# ওয়েব সেটআপ পোর্ট 3000 ফরওয়ার্ড
+add chain=dstnat action=dst-nat to-addresses=172.17.0.2 to-ports=3000 protocol=tcp dst-port=3000 comment="AdGuard Initial Setup GUI"
+# সেটআপ শেষে মূল ড্যাশবোর্ড পোর্ট 80/8080 ফরওয়ার্ড
+add chain=dstnat action=dst-nat to-addresses=172.17.0.2 to-ports=80 protocol=tcp dst-port=8080 comment="AdGuard Web Dashboard"
+
+ব্রাউজারে প্রবেশ করুন: [http://192.168.88.1:3000](http://192.168.88.1:3000)
+
+উইজার্ডে Listen Interfaces-এ All Interfaces এবং DNS পোর্টের জন্য 53 ও ওয়েব প্যানেলের জন্য 80 নির্বাচন করুন।
+
+অ্যাডমিন ইউজারনেম ও পাসওয়ার্ড তৈরি করে ইনিশিয়াল সেটআপ সম্পন্ন করুন।
+
+পরবর্তীতে [http://192.168.88.1:8080](http://192.168.88.1:8080) দিয়ে লগইন করুন।
+
+ধাপ ৬: সমস্ত LAN ট্র্যাফিক AdGuard-এ রিডাইরেক্ট করা
+পুরো নেটওয়ার্কের সব DNS কুয়েরি স্বয়ংক্রিয়ভাবে AdGuard-এর মাধ্যমে পাস করানোর জন্য MikroTik-এ রিডাইরেকশন সেট করুন:
+
+# DHCP নেটওয়ার্কে প্রাইমারি DNS হিসেবে AdGuard আইপি সেট
+/ip dhcp-server network
+set [find address="192.168.88.0/24"] dns-server=172.17.0.2
+
+# কেউ ম্যানুয়াল ডিএনএস বসালেও তা AdGuard-এ ফোর্স রিডাইরেক্ট করা
+/ip firewall nat
+add chain=dstnat action=dst-nat to-addresses=172.17.0.2 to-ports=53 protocol=udp dst-port=53 src-address=!172.17.0.2 in-interface-list=LAN comment="Force All DNS to AdGuard (UDP)"
+add chain=dstnat action=dst-nat to-addresses=172.17.0.2 to-ports=53 protocol=tcp dst-port=53 src-address=!172.17.0.2 in-interface-list=LAN comment="Force All DNS to AdGuard (TCP)"
