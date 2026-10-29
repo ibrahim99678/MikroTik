@@ -1,0 +1,39 @@
+ব্যান্ডউইথ রেট-লিমিটিং ও কনটেন্ট ফিল্টারিং কী এবং কেন প্রয়োজন?
+
+ব্যান্ডউইথ রেট-লিমিটিং (Bandwidth Rate-Limiting): কোনো নির্দিষ্ট ব্যবহারকারী, আইপি (IP), সাবনেট বা অ্যাপ্লিকেশনের জন্য ইন্টারনেটের সর্বোচ্চ আপলোড ও ডাউনলোড গতি বেঁধে দেওয়া।
+
+কেন প্রয়োজন: নেটওয়ার্কে একজন ব্যবহারকারী যেন বড় ফাইল ডাউনলোড বা ৪K ভিডিও স্ট্রিমিং করে অন্যদের ব্যান্ডউইথ চোক (Choke) না করে, ফেয়ার-শেয়ারিং নিশ্চিত করা এবং প্রাতিষ্ঠানিক ক্রিটিক্যাল ট্রাফিক (যেমন ERP, VoIP) মসৃণ রাখা।
+
+কনটেন্ট ফিল্টারিং পলিসি (Content Filtering Policy): নেটওয়ার্কের ভেতর থেকে নির্দিষ্ট ওয়েবসাইট, ক্যাটাগরি (সোশ্যাল মিডিয়া, পর্নোগ্রাফি, গেমিং) বা প্রোটোকল/পোর্ট ব্লক অথবা নিয়ন্ত্রণ করার নিয়মাবলী।
+
+কেন প্রয়োজন: কর্মচারীদের প্রোডাক্টিভিটি বাড়ানো, ডেটা লিক ও ফিশিং/ম্যালওয়্যার আক্রমণ ঠেকানো এবং প্রাতিষ্ঠানিক নেটওয়ার্কের নিরাপত্তা বজায় রাখা।
+
+কোন কোন ডিভাইস বা সফটওয়্যার দিয়ে এটি করা হয়?
+১. এন্টারপ্রাইজ রাউটার: MikroTik RouterBOARD (RouterOS), Cisco ISR/Catalyst, Juniper।
+
+২. নেক্সট-জেন ফায়ারওয়াল (NGFW): Fortinet FortiGate, Palo Alto Networks, pfSense/OPNsense, Sophos XG (অ্যাপ্লিকেশন লেয়ার এবং ডিপ প্যাকেট ইন্সপেকশনের জন্য সেরা)।
+
+৩. DNS গেটওয়ে: Cloudflare Gateway, Cisco Umbrella, AdGuard Home / Pi-hole (DNS স্তরে কনটেন্ট ফিল্টারিংয়ের জন্য)।
+
+পূর্ণাঙ্গ MikroTik কনফিগারেশন গাইড (CLI স্ক্রিপ্ট)
+নিচে একটি আদর্শ সাবনেটের (192.168.10.0/24) জন্য রেট-লিমিটিং এবং কনটেন্ট ব্লকিংয়ের কমান্ড দেওয়া হলো:
+
+##Code Snippet##
+
+# ১. ব্যান্ডউইথ রেট-লিমিটিং (Simple Queue দিয়ে প্রতি ইউজার বা পুরো সাবনেট লিমিট)
+/queue simple
+add name="Staff_Subnet_Limit" target=192.168.10.0/24 max-limit=10M/10M comment="Staff subnet capped at 10Mbps up/down"
+
+# ২. কনটেন্ট ফিল্টারিং - TLS Host / FQDN দিয়ে সোশ্যাল মিডিয়া ব্লক (HTTP/HTTPS)
+/ip firewall filter
+add chain=forward action=drop protocol=tcp dst-port=443 tls-host="*facebook.com*" comment="Block Facebook HTTPS"
+add chain=forward action=drop protocol=tcp dst-port=443 tls-host="*tiktok.com*" comment="Block TikTok HTTPS"
+add chain=forward action=drop protocol=tcp dst-port=443 tls-host="*youtube.com*" comment="Block YouTube HTTPS"
+
+# ৩. ক্লাউডফ্লেয়ার ফ্যামিলি ডিএনএস বা ডাইরেক্ট ডিএনএস ফোর্স রিডাইরেক্ট (Ad/Malware/Adult Filter)
+/ip dns
+set servers=1.1.1.3,1.0.0.3 allow-remote-requests=yes
+
+/ip firewall nat
+add chain=dstnat action=redirect to-ports=53 protocol=udp dst-port=53 comment="Force all LAN DNS queries through MikroTik"
+add chain=dstnat action=redirect to-ports=53 protocol=tcp dst-port=53 comment="Force all TCP DNS queries"
